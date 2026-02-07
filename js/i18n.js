@@ -128,7 +128,7 @@ const i18n = {
         this.applyLanguage();
 
         // Update basic UI elements that might need forced redraw or logic updates
-        if (App && App.updateUI) {
+        if (typeof App !== 'undefined' && App.updateUI) {
             App.updateUI();
         }
     },
