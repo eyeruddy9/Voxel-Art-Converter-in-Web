@@ -1,7 +1,7 @@
 /**
- * 深度估计模块 - 优化版
- * 使用多种传统计算机视觉算法估计图像深度
- * 新增: 显著性检测、纹理复杂度、梯度方向分析、双边滤波平滑
+ * 深度估计模块 - 增强版
+ * 结合传统 CV 算法和前景/背景分割
+ * 确保背景下凹，主体上凸
  */
 
 const DepthEstimator = {
@@ -13,43 +13,44 @@ const DepthEstimator = {
     estimateDepth(processedImage) {
         const { pixels, width, height } = processedImage;
 
-        console.log('DepthEstimator: 开始深度估计...');
+        console.log('DepthEstimator: 开始增强深度估计...');
 
         // 1. 基础特征提取
         const luminance = this.computeLuminance(pixels);
         const edges = this.computeEdges(luminance, width, height);
-        const blur = this.computeBlur(luminance, width, height);
         const saturation = this.computeSaturation(pixels);
-        const position = this.computePositionCue(width, height);
 
-        // 2. 高级特征提取 (新增)
+        // 2. 前景/背景分割 (核心改进)
+        const foregroundMask = this.segmentForeground(pixels, luminance, edges, saturation, width, height);
+
+        // 3. 高级特征
         const saliency = this.computeSaliency(pixels, luminance, width, height);
-        const texture = this.computeTextureComplexity(luminance, width, height);
-        const gradient = this.computeGradientDirection(luminance, width, height);
         const colorContrast = this.computeColorContrast(pixels, width, height);
+        const centerBias = this.computeCenterBias(width, height);
 
-        // 3. 综合所有线索生成深度图
-        const depth = this.combineDepthCues({
+        // 4. 综合生成深度图
+        const depth = this.combineWithSegmentation({
+            foregroundMask,
             luminance,
             edges,
-            blur,
             saturation,
-            position,
             saliency,
-            texture,
-            gradient,
             colorContrast,
+            centerBias,
+            pixels,
             width,
-            height,
-            pixels
+            height
         });
 
+        // 5. 平滑处理
+        const smoothed = this.edgeAwareSmooth(depth, edges, width, height);
+
         console.log('DepthEstimator: 深度估计完成');
-        return depth;
+        return smoothed;
     },
 
     /**
-     * 计算每个像素的亮度
+     * 计算亮度
      */
     computeLuminance(pixels) {
         return pixels.map(row =>
@@ -61,7 +62,7 @@ const DepthEstimator = {
     },
 
     /**
-     * 使用 Sobel 算子计算边缘强度
+     * Sobel 边缘检测
      */
     computeEdges(luminance, width, height) {
         const edges = [];
@@ -84,60 +85,11 @@ const DepthEstimator = {
                         gy += lum * sobelY[ky + 1][kx + 1];
                     }
                 }
-
-                const magnitude = Math.sqrt(gx * gx + gy * gy);
-                row.push(Math.min(1, magnitude * 1.5));
+                row.push(Math.min(1, Math.sqrt(gx * gx + gy * gy) * 2));
             }
             edges.push(row);
         }
         return edges;
-    },
-
-    /**
-     * 使用 Laplacian 方差检测模糊程度
-     */
-    computeBlur(luminance, width, height) {
-        const sharpness = [];
-        const windowSize = 2;
-        const laplacian = [[0, 1, 0], [1, -4, 1], [0, 1, 0]];
-
-        for (let y = 0; y < height; y++) {
-            const row = [];
-            for (let x = 0; x < width; x++) {
-                if (x < windowSize || x >= width - windowSize ||
-                    y < windowSize || y >= height - windowSize) {
-                    row.push(0.5);
-                    continue;
-                }
-
-                let sum = 0;
-                let sumSq = 0;
-                let count = 0;
-
-                for (let wy = -windowSize; wy <= windowSize; wy++) {
-                    for (let wx = -windowSize; wx <= windowSize; wx++) {
-                        let lap = 0;
-                        for (let ky = -1; ky <= 1; ky++) {
-                            for (let kx = -1; kx <= 1; kx++) {
-                                const ly = y + wy + ky;
-                                const lx = x + wx + kx;
-                                if (ly >= 0 && ly < height && lx >= 0 && lx < width) {
-                                    lap += luminance[ly][lx] * laplacian[ky + 1][kx + 1];
-                                }
-                            }
-                        }
-                        sum += lap;
-                        sumSq += lap * lap;
-                        count++;
-                    }
-                }
-
-                const variance = (sumSq / count) - Math.pow(sum / count, 2);
-                row.push(Math.min(1, Math.sqrt(Math.abs(variance)) * 8));
-            }
-            sharpness.push(row);
-        }
-        return sharpness;
     },
 
     /**
@@ -148,65 +100,36 @@ const DepthEstimator = {
             row.map(p => {
                 if (!p || p.a < 128) return 0;
                 const r = p.r / 255, g = p.g / 255, b = p.b / 255;
-                const max = Math.max(r, g, b);
-                const min = Math.min(r, g, b);
-                if (max === 0) return 0;
-                return (max - min) / max;
+                const max = Math.max(r, g, b), min = Math.min(r, g, b);
+                return max > 0 ? (max - min) / max : 0;
             })
         );
     },
 
     /**
-     * 计算位置线索 - 改进版
-     * 支持不同的图像类型（人像、风景等）
+     * 核心: 前景/背景分割
+     * 使用多种线索识别主体
      */
-    computePositionCue(width, height) {
-        const position = [];
-        const centerX = width / 2;
-        const centerY = height / 2;
+    segmentForeground(pixels, luminance, edges, saturation, width, height) {
+        console.log('DepthEstimator: 执行前景/背景分割...');
 
-        for (let y = 0; y < height; y++) {
-            const row = [];
-            for (let x = 0; x < width; x++) {
-                // 底部权重
-                const yWeight = y / (height - 1);
-                
-                // 中心权重 (使用高斯分布)
-                const dx = (x - centerX) / (width / 2);
-                const dy = (y - centerY) / (height / 2);
-                const distFromCenter = Math.sqrt(dx * dx + dy * dy);
-                const centerWeight = Math.exp(-distFromCenter * distFromCenter * 0.5);
-                
-                // 混合权重
-                row.push(yWeight * 0.6 + centerWeight * 0.4);
-            }
-            position.push(row);
-        }
-        return position;
-    },
+        // 1. 检测边缘区域 (通常是背景)
+        const borderMask = this.computeBorderMask(width, height);
 
-    /**
-     * 新增: 计算显著性图
-     * 基于颜色对比度和空间分布
-     */
-    computeSaliency(pixels, luminance, width, height) {
-        const saliency = [];
-        
-        // 计算全局平均颜色
-        let avgR = 0, avgG = 0, avgB = 0, count = 0;
-        for (const row of pixels) {
-            for (const p of row) {
-                if (p && p.a >= 128) {
-                    avgR += p.r;
-                    avgG += p.g;
-                    avgB += p.b;
-                    count++;
-                }
-            }
-        }
-        avgR /= count; avgG /= count; avgB /= count;
+        // 2. 获取边缘区域的颜色统计 (作为背景种子)
+        const bgColors = this.sampleBorderColors(pixels, width, height);
 
-        // 计算每个像素与平均颜色的距离
+        // 3. 计算每个像素与背景颜色的相似度
+        const bgSimilarity = this.computeBackgroundSimilarity(pixels, bgColors, width, height);
+
+        // 4. 计算中心偏置 (中心更可能是前景)
+        const centerWeight = this.computeCenterWeight(width, height);
+
+        // 5. 计算颜色聚类 (找出与边缘不同的颜色区域)
+        const colorDifference = this.computeColorDifferenceFromBorder(pixels, bgColors, width, height);
+
+        // 6. 综合判断前景概率
+        const foregroundProb = [];
         for (let y = 0; y < height; y++) {
             const row = [];
             for (let x = 0; x < width; x++) {
@@ -216,34 +139,317 @@ const DepthEstimator = {
                     continue;
                 }
 
-                // 颜色距离
-                const colorDist = Math.sqrt(
+                // 背景相似度越低 = 越可能是前景
+                const bgDist = 1 - bgSimilarity[y][x];
+
+                // 中心偏置
+                const center = centerWeight[y][x];
+
+                // 颜色差异
+                const colorDiff = colorDifference[y][x];
+
+                // 饱和度 (高饱和度更可能是前景)
+                const sat = saturation[y][x];
+
+                // 边缘强度 (边缘区域是物体边界)
+                const edge = edges[y][x];
+
+                // 综合计算
+                let prob = 0;
+                prob += bgDist * 0.35;      // 与背景不同
+                prob += center * 0.20;      // 中心偏置
+                prob += colorDiff * 0.20;   // 颜色差异
+                prob += sat * 0.15;         // 饱和度
+                prob += edge * 0.10;        // 边缘
+
+                row.push(Math.max(0, Math.min(1, prob)));
+            }
+            foregroundProb.push(row);
+        }
+
+        // 7. 应用阈值和形态学操作
+        const refined = this.refineForegroundMask(foregroundProb, width, height);
+
+        return refined;
+    },
+
+    /**
+     * 计算边缘蒙版
+     */
+    computeBorderMask(width, height) {
+        const mask = [];
+        const borderWidth = Math.max(3, Math.min(width, height) * 0.1);
+
+        for (let y = 0; y < height; y++) {
+            const row = [];
+            for (let x = 0; x < width; x++) {
+                const distFromBorder = Math.min(x, y, width - 1 - x, height - 1 - y);
+                row.push(distFromBorder < borderWidth ? 1 : 0);
+            }
+            mask.push(row);
+        }
+        return mask;
+    },
+
+    /**
+     * 采样边缘区域颜色
+     */
+    sampleBorderColors(pixels, width, height) {
+        const colors = [];
+        const borderWidth = Math.max(3, Math.min(width, height) * 0.15);
+
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                const distFromBorder = Math.min(x, y, width - 1 - x, height - 1 - y);
+                if (distFromBorder < borderWidth) {
+                    const p = pixels[y][x];
+                    if (p && p.a >= 128) {
+                        colors.push([p.r, p.g, p.b]);
+                    }
+                }
+            }
+        }
+
+        // 返回颜色列表和平均颜色
+        if (colors.length === 0) {
+            return { colors: [], avgColor: [128, 128, 128] };
+        }
+
+        const avgColor = [0, 0, 0];
+        for (const c of colors) {
+            avgColor[0] += c[0];
+            avgColor[1] += c[1];
+            avgColor[2] += c[2];
+        }
+        avgColor[0] /= colors.length;
+        avgColor[1] /= colors.length;
+        avgColor[2] /= colors.length;
+
+        return { colors, avgColor };
+    },
+
+    /**
+     * 计算与背景颜色的相似度
+     */
+    computeBackgroundSimilarity(pixels, bgColors, width, height) {
+        const similarity = [];
+        const { avgColor } = bgColors;
+
+        for (let y = 0; y < height; y++) {
+            const row = [];
+            for (let x = 0; x < width; x++) {
+                const p = pixels[y][x];
+                if (!p || p.a < 128) {
+                    row.push(1); // 透明像素视为背景
+                    continue;
+                }
+
+                // 计算与平均背景色的距离
+                const dist = Math.sqrt(
+                    Math.pow(p.r - avgColor[0], 2) +
+                    Math.pow(p.g - avgColor[1], 2) +
+                    Math.pow(p.b - avgColor[2], 2)
+                );
+
+                // 归一化 (越近越相似)
+                const maxDist = 441.67; // sqrt(255^2 * 3)
+                row.push(1 - Math.min(1, dist / (maxDist * 0.5)));
+            }
+            similarity.push(row);
+        }
+        return similarity;
+    },
+
+    /**
+     * 计算中心权重 (高斯分布)
+     */
+    computeCenterWeight(width, height) {
+        const weight = [];
+        const centerX = width / 2;
+        const centerY = height / 2;
+        const sigmaX = width / 3;
+        const sigmaY = height / 3;
+
+        for (let y = 0; y < height; y++) {
+            const row = [];
+            for (let x = 0; x < width; x++) {
+                const dx = (x - centerX) / sigmaX;
+                const dy = (y - centerY) / sigmaY;
+                row.push(Math.exp(-(dx * dx + dy * dy) / 2));
+            }
+            weight.push(row);
+        }
+        return weight;
+    },
+
+    /**
+     * 计算与边缘颜色的差异
+     */
+    computeColorDifferenceFromBorder(pixels, bgColors, width, height) {
+        const diff = [];
+        const { colors, avgColor } = bgColors;
+
+        // 计算边缘颜色的方差
+        let colorVariance = 0;
+        for (const c of colors) {
+            colorVariance += Math.pow(c[0] - avgColor[0], 2) +
+                Math.pow(c[1] - avgColor[1], 2) +
+                Math.pow(c[2] - avgColor[2], 2);
+        }
+        colorVariance = colors.length > 0 ? Math.sqrt(colorVariance / colors.length) : 50;
+        const threshold = Math.max(30, colorVariance * 1.5);
+
+        for (let y = 0; y < height; y++) {
+            const row = [];
+            for (let x = 0; x < width; x++) {
+                const p = pixels[y][x];
+                if (!p || p.a < 128) {
+                    row.push(0);
+                    continue;
+                }
+
+                const dist = Math.sqrt(
+                    Math.pow(p.r - avgColor[0], 2) +
+                    Math.pow(p.g - avgColor[1], 2) +
+                    Math.pow(p.b - avgColor[2], 2)
+                );
+
+                // 超过阈值才算显著不同
+                row.push(Math.min(1, Math.max(0, (dist - threshold) / 100)));
+            }
+            diff.push(row);
+        }
+        return diff;
+    },
+
+    /**
+     * 精细化前景蒙版
+     */
+    refineForegroundMask(prob, width, height) {
+        // 1. 应用软阈值
+        let mask = prob.map(row => row.map(p => p));
+
+        // 2. 高斯模糊
+        mask = this.gaussianBlur(mask, width, height, 2);
+
+        // 3. 对比度增强
+        mask = this.enhanceContrast(mask);
+
+        // 4. 再次模糊以平滑边缘
+        mask = this.gaussianBlur(mask, width, height, 1);
+
+        return mask;
+    },
+
+    /**
+     * 高斯模糊
+     */
+    gaussianBlur(data, width, height, radius) {
+        const result = [];
+        const kernel = this.createGaussianKernel(radius);
+        const kSize = kernel.length;
+        const kHalf = Math.floor(kSize / 2);
+
+        for (let y = 0; y < height; y++) {
+            const row = [];
+            for (let x = 0; x < width; x++) {
+                let sum = 0, weightSum = 0;
+
+                for (let ky = -kHalf; ky <= kHalf; ky++) {
+                    for (let kx = -kHalf; kx <= kHalf; kx++) {
+                        const ny = Math.max(0, Math.min(height - 1, y + ky));
+                        const nx = Math.max(0, Math.min(width - 1, x + kx));
+                        const weight = kernel[ky + kHalf][kx + kHalf];
+                        sum += data[ny][nx] * weight;
+                        weightSum += weight;
+                    }
+                }
+                row.push(sum / weightSum);
+            }
+            result.push(row);
+        }
+        return result;
+    },
+
+    /**
+     * 创建高斯核
+     */
+    createGaussianKernel(radius) {
+        const size = radius * 2 + 1;
+        const kernel = [];
+        const sigma = radius / 2;
+
+        for (let y = -radius; y <= radius; y++) {
+            const row = [];
+            for (let x = -radius; x <= radius; x++) {
+                const g = Math.exp(-(x * x + y * y) / (2 * sigma * sigma));
+                row.push(g);
+            }
+            kernel.push(row);
+        }
+        return kernel;
+    },
+
+    /**
+     * 对比度增强
+     */
+    enhanceContrast(data) {
+        // 找到最小和最大值
+        let min = 1, max = 0;
+        for (const row of data) {
+            for (const v of row) {
+                if (v < min) min = v;
+                if (v > max) max = v;
+            }
+        }
+
+        if (max === min) return data;
+
+        // 应用 S 曲线增强对比度
+        const range = max - min;
+        return data.map(row => row.map(v => {
+            const normalized = (v - min) / range;
+            // S 曲线: 3x^2 - 2x^3
+            const enhanced = 3 * normalized * normalized - 2 * normalized * normalized * normalized;
+            return enhanced;
+        }));
+    },
+
+    /**
+     * 计算显著性
+     */
+    computeSaliency(pixels, luminance, width, height) {
+        const saliency = [];
+
+        let avgR = 0, avgG = 0, avgB = 0, count = 0;
+        for (const row of pixels) {
+            for (const p of row) {
+                if (p && p.a >= 128) {
+                    avgR += p.r; avgG += p.g; avgB += p.b;
+                    count++;
+                }
+            }
+        }
+        if (count > 0) {
+            avgR /= count; avgG /= count; avgB /= count;
+        }
+
+        for (let y = 0; y < height; y++) {
+            const row = [];
+            for (let x = 0; x < width; x++) {
+                const p = pixels[y][x];
+                if (!p || p.a < 128) {
+                    row.push(0);
+                    continue;
+                }
+
+                const dist = Math.sqrt(
                     Math.pow(p.r - avgR, 2) +
                     Math.pow(p.g - avgG, 2) +
                     Math.pow(p.b - avgB, 2)
-                ) / 441.67; // 最大距离 sqrt(255^2*3)
+                ) / 441.67;
 
-                // 局部对比度
-                let localContrast = 0;
-                let neighborCount = 0;
-                const radius = 2;
-                
-                for (let dy = -radius; dy <= radius; dy++) {
-                    for (let dx = -radius; dx <= radius; dx++) {
-                        const ny = y + dy, nx = x + dx;
-                        if (ny >= 0 && ny < height && nx >= 0 && nx < width && (dx !== 0 || dy !== 0)) {
-                            const np = pixels[ny][nx];
-                            if (np && np.a >= 128) {
-                                localContrast += Math.abs(luminance[y][x] - luminance[ny][nx]);
-                                neighborCount++;
-                            }
-                        }
-                    }
-                }
-                localContrast = neighborCount > 0 ? localContrast / neighborCount : 0;
-
-                // 组合显著性
-                row.push(Math.min(1, colorDist * 0.6 + localContrast * 0.4));
+                row.push(Math.min(1, dist * 1.5));
             }
             saliency.push(row);
         }
@@ -251,87 +457,11 @@ const DepthEstimator = {
     },
 
     /**
-     * 新增: 计算纹理复杂度
-     * 有纹理的区域通常是前景物体
-     */
-    computeTextureComplexity(luminance, width, height) {
-        const texture = [];
-        const windowSize = 3;
-
-        for (let y = 0; y < height; y++) {
-            const row = [];
-            for (let x = 0; x < width; x++) {
-                if (x < windowSize || x >= width - windowSize ||
-                    y < windowSize || y >= height - windowSize) {
-                    row.push(0.5);
-                    continue;
-                }
-
-                // 计算局部标准差
-                let sum = 0;
-                let sumSq = 0;
-                let count = 0;
-
-                for (let dy = -windowSize; dy <= windowSize; dy++) {
-                    for (let dx = -windowSize; dx <= windowSize; dx++) {
-                        const lum = luminance[y + dy][x + dx];
-                        sum += lum;
-                        sumSq += lum * lum;
-                        count++;
-                    }
-                }
-
-                const mean = sum / count;
-                const variance = (sumSq / count) - (mean * mean);
-                const stdDev = Math.sqrt(Math.max(0, variance));
-                
-                row.push(Math.min(1, stdDev * 4));
-            }
-            texture.push(row);
-        }
-        return texture;
-    },
-
-    /**
-     * 新增: 计算梯度方向一致性
-     * 用于检测物体边界和表面
-     */
-    computeGradientDirection(luminance, width, height) {
-        const directionConsistency = [];
-        
-        for (let y = 0; y < height; y++) {
-            const row = [];
-            for (let x = 0; x < width; x++) {
-                if (x < 2 || x >= width - 2 || y < 2 || y >= height - 2) {
-                    row.push(0.5);
-                    continue;
-                }
-
-                // 计算梯度
-                const gx = luminance[y][x + 1] - luminance[y][x - 1];
-                const gy = luminance[y + 1][x] - luminance[y - 1][x];
-                
-                // 梯度方向和强度
-                const magnitude = Math.sqrt(gx * gx + gy * gy);
-                
-                // 垂直梯度倾向于表示水平表面（较近）
-                // 水平梯度倾向于表示垂直边缘
-                const verticalBias = Math.abs(gy) / (magnitude + 0.001);
-                
-                row.push(Math.min(1, magnitude * 2 * (0.5 + verticalBias * 0.5)));
-            }
-            directionConsistency.push(row);
-        }
-        return directionConsistency;
-    },
-
-    /**
-     * 新增: 计算颜色对比度
-     * 高对比度区域通常是前景
+     * 计算颜色对比度
      */
     computeColorContrast(pixels, width, height) {
         const contrast = [];
-        const radius = 3;
+        const radius = 2;
 
         for (let y = 0; y < height; y++) {
             const row = [];
@@ -343,7 +473,6 @@ const DepthEstimator = {
                 }
 
                 let maxDiff = 0;
-                
                 for (let dy = -radius; dy <= radius; dy++) {
                     for (let dx = -radius; dx <= radius; dx++) {
                         const ny = y + dy, nx = x + dx;
@@ -360,8 +489,7 @@ const DepthEstimator = {
                         }
                     }
                 }
-                
-                row.push(Math.min(1, maxDiff / 200));
+                row.push(Math.min(1, maxDiff / 150));
             }
             contrast.push(row);
         }
@@ -369,184 +497,134 @@ const DepthEstimator = {
     },
 
     /**
-     * 综合所有深度线索 - 优化版
-     * 使用自适应权重
+     * 计算中心偏置
      */
-    combineDepthCues(cues) {
-        const { 
-            luminance, edges, blur, saturation, position,
-            saliency, texture, gradient, colorContrast,
-            width, height, pixels 
-        } = cues;
-
-        const depth = [];
-
-        // 自适应权重 - 根据图像特性调整
-        const imageStats = this.analyzeImage(pixels, luminance, width, height);
-        const weights = this.calculateAdaptiveWeights(imageStats);
-
-        console.log('DepthEstimator: 使用自适应权重:', weights);
+    computeCenterBias(width, height) {
+        const bias = [];
+        const centerX = width / 2, centerY = height / 2;
+        const maxDist = Math.sqrt(centerX * centerX + centerY * centerY);
 
         for (let y = 0; y < height; y++) {
             const row = [];
             for (let x = 0; x < width; x++) {
-                // 基础线索
-                const lum = luminance[y][x];
-                const edge = edges[y][x];
-                const sharp = blur[y][x];
-                const sat = saturation[y][x];
-                const pos = position[y][x];
-                
-                // 高级线索
-                const sal = saliency[y][x];
-                const tex = texture[y][x];
-                const grad = gradient[y][x];
-                const contrast = colorContrast[y][x];
+                const dist = Math.sqrt(Math.pow(x - centerX, 2) + Math.pow(y - centerY, 2));
+                row.push(1 - dist / maxDist);
+            }
+            bias.push(row);
+        }
+        return bias;
+    },
 
-                // 综合计算深度值
-                let d = 0;
-                d += lum * weights.luminance;
-                d += sharp * weights.blur;
-                d += sat * weights.saturation;
-                d += pos * weights.position;
-                d += sal * weights.saliency;
-                d += tex * weights.texture;
-                d += grad * weights.gradient;
-                d += contrast * weights.contrast;
-                
-                // 边缘作为深度边界增强
-                d += edge * weights.edges * (1 + sal);
+    /**
+     * 结合分割结果生成深度图
+     */
+    combineWithSegmentation(data) {
+        const {
+            foregroundMask, luminance, edges, saturation,
+            saliency, colorContrast, centerBias,
+            width, height
+        } = data;
+
+        const depth = [];
+
+        for (let y = 0; y < height; y++) {
+            const row = [];
+            for (let x = 0; x < width; x++) {
+                // 前景蒙版是核心 (0=背景, 1=前景)
+                const fg = foregroundMask[y][x];
+
+                // 其他线索作为微调
+                const sal = saliency[y][x];
+                const contrast = colorContrast[y][x];
+                const center = centerBias[y][x];
+                const sat = saturation[y][x];
+                const lum = luminance[y][x];
+
+                // 前景深度: 基于前景蒙版
+                // 背景下凹 (低深度), 主体上凸 (高深度)
+                let d = fg * 0.7;  // 前景蒙版贡献70%
+
+                // 微调线索
+                d += sal * 0.10;       // 显著性
+                d += contrast * 0.05;  // 对比度
+                d += center * 0.05;    // 中心偏置
+                d += sat * 0.05;       // 饱和度
+                d += lum * 0.05;       // 亮度
+
+                // 确保背景明显低于前景
+                if (fg < 0.3) {
+                    d *= 0.5; // 背景区域深度减半
+                }
 
                 row.push(Math.max(0, Math.min(1, d)));
             }
             depth.push(row);
         }
 
-        // 应用边缘保持平滑
-        const smoothed = this.bilateralFilter(depth, luminance, width, height);
-        
-        // 归一化
-        return this.normalizeDepth(smoothed);
+        // 增强对比度
+        return this.enhanceDepthContrast(depth);
     },
 
     /**
-     * 分析图像特性
+     * 增强深度对比度
      */
-    analyzeImage(pixels, luminance, width, height) {
-        let totalLuminance = 0;
-        let totalSaturation = 0;
-        let edgeCount = 0;
-        let count = 0;
+    enhanceDepthContrast(depth) {
+        // 找到前景和背景的分界
+        const values = depth.flat().filter(v => v > 0);
+        if (values.length === 0) return depth;
 
-        for (let y = 1; y < height - 1; y++) {
-            for (let x = 1; x < width - 1; x++) {
-                const p = pixels[y][x];
-                if (p && p.a >= 128) {
-                    totalLuminance += luminance[y][x];
-                    
-                    const r = p.r / 255, g = p.g / 255, b = p.b / 255;
-                    const max = Math.max(r, g, b), min = Math.min(r, g, b);
-                    totalSaturation += max > 0 ? (max - min) / max : 0;
-                    
-                    // 简单边缘检测
-                    const diff = Math.abs(luminance[y][x] - luminance[y][x + 1]) +
-                                Math.abs(luminance[y][x] - luminance[y + 1][x]);
-                    if (diff > 0.1) edgeCount++;
-                    
-                    count++;
-                }
+        values.sort((a, b) => a - b);
+        const median = values[Math.floor(values.length / 2)];
+
+        return depth.map(row => row.map(d => {
+            if (d < median * 0.8) {
+                // 背景: 压低
+                return d * 0.6;
+            } else {
+                // 前景: 提升
+                return 0.4 + d * 0.6;
             }
-        }
-
-        return {
-            avgLuminance: count > 0 ? totalLuminance / count : 0.5,
-            avgSaturation: count > 0 ? totalSaturation / count : 0.5,
-            edgeDensity: count > 0 ? edgeCount / count : 0.5,
-            isHighContrast: (totalLuminance / count) > 0.3 && (totalLuminance / count) < 0.7
-        };
+        }));
     },
 
     /**
-     * 计算自适应权重
+     * 边缘感知平滑
      */
-    calculateAdaptiveWeights(stats) {
-        const { avgLuminance, avgSaturation, edgeDensity, isHighContrast } = stats;
-
-        // 基础权重
-        let weights = {
-            luminance: 0.15,
-            edges: 0.10,
-            blur: 0.15,
-            saturation: 0.10,
-            position: 0.15,
-            saliency: 0.15,
-            texture: 0.08,
-            gradient: 0.06,
-            contrast: 0.06
-        };
-
-        // 高饱和度图像 - 增加饱和度和显著性权重
-        if (avgSaturation > 0.4) {
-            weights.saturation *= 1.5;
-            weights.saliency *= 1.3;
-        }
-
-        // 低对比度图像 - 增加边缘和位置权重
-        if (!isHighContrast) {
-            weights.position *= 1.3;
-            weights.blur *= 1.2;
-        }
-
-        // 高边缘密度 - 增加纹理和边缘权重
-        if (edgeDensity > 0.3) {
-            weights.texture *= 1.4;
-            weights.edges *= 1.3;
-        }
-
-        // 归一化权重
-        const sum = Object.values(weights).reduce((a, b) => a + b, 0);
-        for (const key in weights) {
-            weights[key] /= sum;
-        }
-
-        return weights;
-    },
-
-    /**
-     * 新增: 双边滤波
-     * 保持边缘的同时平滑深度图
-     */
-    bilateralFilter(depth, luminance, width, height) {
+    edgeAwareSmooth(depth, edges, width, height) {
         const result = [];
-        const spatialSigma = 2.0;
-        const rangeSigma = 0.1;
-        const windowSize = 3;
+        const radius = 2;
+        const spatialSigma = 1.5;
+        const rangeSigma = 0.15;
 
         for (let y = 0; y < height; y++) {
             const row = [];
             for (let x = 0; x < width; x++) {
-                if (x < windowSize || x >= width - windowSize ||
-                    y < windowSize || y >= height - windowSize) {
+                if (x < radius || x >= width - radius ||
+                    y < radius || y >= height - radius) {
                     row.push(depth[y][x]);
                     continue;
                 }
 
                 let weightSum = 0;
                 let valueSum = 0;
-                const centerLum = luminance[y][x];
+                const centerDepth = depth[y][x];
+                const centerEdge = edges[y][x];
 
-                for (let dy = -windowSize; dy <= windowSize; dy++) {
-                    for (let dx = -windowSize; dx <= windowSize; dx++) {
+                for (let dy = -radius; dy <= radius; dy++) {
+                    for (let dx = -radius; dx <= radius; dx++) {
                         const ny = y + dy, nx = x + dx;
-                        
+
                         // 空间权重
                         const spatialWeight = Math.exp(-(dx * dx + dy * dy) / (2 * spatialSigma * spatialSigma));
-                        
-                        // 范围权重 (基于亮度相似性)
-                        const lumDiff = luminance[ny][nx] - centerLum;
-                        const rangeWeight = Math.exp(-(lumDiff * lumDiff) / (2 * rangeSigma * rangeSigma));
-                        
-                        const weight = spatialWeight * rangeWeight;
+
+                        // 深度范围权重
+                        const depthDiff = depth[ny][nx] - centerDepth;
+                        const rangeWeight = Math.exp(-(depthDiff * depthDiff) / (2 * rangeSigma * rangeSigma));
+
+                        // 边缘权重 (边缘处减少平滑)
+                        const edgeWeight = 1 - Math.max(centerEdge, edges[ny][nx]) * 0.8;
+
+                        const weight = spatialWeight * rangeWeight * edgeWeight;
                         weightSum += weight;
                         valueSum += depth[ny][nx] * weight;
                     }
@@ -557,15 +635,14 @@ const DepthEstimator = {
             result.push(row);
         }
 
-        return result;
+        return this.normalizeDepth(result);
     },
 
     /**
-     * 归一化深度图
+     * 归一化深度
      */
     normalizeDepth(depth) {
-        let min = Infinity, max = -Infinity;
-
+        let min = 1, max = 0;
         for (const row of depth) {
             for (const d of row) {
                 if (d < min) min = d;
@@ -573,20 +650,17 @@ const DepthEstimator = {
             }
         }
 
-        if (max === min) {
-            return depth.map(row => row.map(() => 0.5));
-        }
+        if (max === min) return depth.map(row => row.map(() => 0.5));
 
         const range = max - min;
         return depth.map(row => row.map(d => (d - min) / range));
     },
 
     /**
-     * 平滑深度图
+     * 平滑深度
      */
     smoothDepth(depth, iterations = 2) {
         let result = depth;
-
         for (let i = 0; i < iterations; i++) {
             const smoothed = [];
             const height = result.length;
@@ -596,7 +670,6 @@ const DepthEstimator = {
                 const row = [];
                 for (let x = 0; x < width; x++) {
                     let sum = 0, count = 0;
-
                     for (let dy = -1; dy <= 1; dy++) {
                         for (let dx = -1; dx <= 1; dx++) {
                             const ny = y + dy, nx = x + dx;
@@ -616,7 +689,7 @@ const DepthEstimator = {
     },
 
     /**
-     * 量化深度到指定层数
+     * 量化深度
      */
     quantizeDepth(depth, layers) {
         return depth.map(row =>
