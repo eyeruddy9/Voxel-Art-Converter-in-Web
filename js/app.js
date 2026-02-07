@@ -201,8 +201,7 @@ const App = {
             this.hideLoading();
             console.log(`图像加载完成: ${image.width}x${image.height}`);
         } catch (error) {
-        } catch (error) {
-            console.error('Data loading failed:', error);
+            console.error('Image loading failed:', error);
             alert(i18n.t('error_load') + error.message);
             this.hideLoading();
         }
