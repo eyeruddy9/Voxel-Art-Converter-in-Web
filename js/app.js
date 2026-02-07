@@ -23,6 +23,10 @@ const App = {
     init() {
         this.cacheElements();
         this.bindEvents();
+
+        // Initialize i18n
+        i18n.init();
+
         this.initRenderer();
         this.updateUI();
 
@@ -175,12 +179,12 @@ const App = {
     async loadImageFile(file) {
         // 检查文件类型
         if (!file.type.startsWith('image/')) {
-            alert('请选择图像文件');
+            alert(i18n.t('error_image_type'));
             return;
         }
 
         try {
-            this.showLoading('正在加载图像...');
+            this.showLoading(i18n.t('loading_processing'));
 
             const image = await ImageProcessor.loadImage(file);
             this.state.image = image;
@@ -197,8 +201,9 @@ const App = {
             this.hideLoading();
             console.log(`图像加载完成: ${image.width}x${image.height}`);
         } catch (error) {
-            console.error('加载图像失败:', error);
-            alert('加载图像失败: ' + error.message);
+        } catch (error) {
+            console.error('Data loading failed:', error);
+            alert(i18n.t('error_load') + error.message);
             this.hideLoading();
         }
     },
@@ -218,23 +223,23 @@ const App = {
             const paletteName = this.elements.palette.value;
             const fillMode = this.elements.fillMode.value;
 
-            // 1. 图像处理
-            this.showLoading('正在处理图像...');
-            await this.delay(50); // 让 UI 更新
+            // 1. Image Processing
+            this.showLoading(i18n.t('loading_processing'));
+            await this.delay(50); // Let UI update
 
             const processedImage = ImageProcessor.processImage(this.state.image, resolution);
             this.state.processedImage = processedImage;
 
-            // 2. 深度估计
-            this.showLoading('正在估计深度...');
+            // 2. Depth Estimation
+            this.showLoading(i18n.t('loading_depth'));
             await this.delay(50);
 
             const depth = DepthEstimator.estimateDepth(processedImage);
             const smoothedDepth = DepthEstimator.smoothDepth(depth, 2);
             this.state.depth = smoothedDepth;
 
-            // 3. 颜色映射
-            this.showLoading('正在映射颜色...');
+            // 3. Color Mapping
+            this.showLoading(i18n.t('loading_color'));
             await this.delay(50);
 
             const blocks = ImageProcessor.mapToBlocksWithDithering(
@@ -243,8 +248,8 @@ const App = {
             );
             this.state.blocks = blocks;
 
-            // 4. 体素化
-            this.showLoading('正在生成体素...');
+            // 4. Voxelization
+            this.showLoading(i18n.t('loading_voxel'));
             await this.delay(50);
 
             const voxelGrid = Voxelizer.createVoxelGrid({
@@ -254,23 +259,23 @@ const App = {
                 fillMode
             });
 
-            // 5. 优化
-            this.showLoading('正在优化模型...');
+            // 5. Optimization
+            this.showLoading(i18n.t('loading_optimize'));
             await this.delay(50);
 
             const optimizedGrid = Voxelizer.optimizeGrid(voxelGrid);
             this.state.voxelGrid = optimizedGrid;
 
-            // 6. 渲染
-            this.showLoading('正在渲染...');
+            // 6. Rendering
+            this.showLoading(i18n.t('loading_render'));
             await this.delay(50);
 
             VoxelRenderer.renderVoxels(optimizedGrid);
 
-            // 7. 更新统计
+            // 7. Update Stats
             const stats = Voxelizer.getStats(optimizedGrid);
-            this.elements.statsBlocks.textContent = `方块数: ${stats.totalVoxels}`;
-            this.elements.statsSize.textContent = `尺寸: ${stats.dimensions}`;
+            this.elements.statsBlocks.textContent = i18n.t('stats_blocks') + stats.totalVoxels;
+            this.elements.statsSize.textContent = i18n.t('stats_size') + stats.dimensions;
 
             // 启用导出按钮
             this.elements.exportObj.disabled = false;
@@ -280,8 +285,8 @@ const App = {
             console.log('转换完成:', stats);
 
         } catch (error) {
-            console.error('转换失败:', error);
-            alert('转换失败: ' + error.message);
+            console.error('Conversion failed:', error);
+            alert('Error: ' + error.message);
             this.hideLoading();
         } finally {
             this.state.isProcessing = false;
@@ -296,7 +301,7 @@ const App = {
         if (!this.state.voxelGrid) return;
 
         try {
-            this.showLoading('正在生成 OBJ 文件...');
+            this.showLoading(i18n.t('loading_obj'));
 
             const exportData = ObjExporter.export(this.state.voxelGrid, {
                 filename: 'voxel_art',
@@ -322,7 +327,7 @@ const App = {
         if (!this.state.voxelGrid) return;
 
         try {
-            this.showLoading('正在生成 Schematic 文件...');
+            this.showLoading(i18n.t('loading_schematic'));
 
             const exportData = SchematicExporter.export(this.state.voxelGrid, {
                 filename: 'voxel_art'
@@ -353,16 +358,23 @@ const App = {
      */
     hideLoading() {
         this.elements.loadingOverlay.classList.remove('visible');
-        this.elements.loadingText.textContent = '准备就绪';
+        this.elements.loadingText.textContent = i18n.t('ready');
     },
 
     /**
      * 更新 UI 状态
      */
     updateUI() {
-        // 初始状态
+        // Initial state
         this.elements.resolutionValue.textContent = this.elements.resolution.value;
         this.elements.depthScaleValue.textContent = this.elements.depthScale.value;
+
+        // Update stats if exists
+        if (this.state.voxelGrid) {
+            const stats = Voxelizer.getStats(this.state.voxelGrid);
+            this.elements.statsBlocks.textContent = i18n.t('stats_blocks') + stats.totalVoxels;
+            this.elements.statsSize.textContent = i18n.t('stats_size') + stats.dimensions;
+        }
     },
 
     /**
