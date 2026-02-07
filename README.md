@@ -15,7 +15,7 @@
 
 ## 🚀 在线体验
 
-[👉 [Live Demo](https://voxel-art-converter.vercel.app) *(部署后替换)*](https://voxel-art-converter-in-web.vercel.app/)
+(https://voxel-art-converter-in-web.vercel.app/)
 
 ## 🛠️ 本地运行
 
