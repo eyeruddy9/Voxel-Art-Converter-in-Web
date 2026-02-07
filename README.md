@@ -78,7 +78,7 @@ npx http-server . -p 8080
 
 ## 📄 License
 
-MIT License
+GPLv2 License
 
 ## 🙏 致谢
 
