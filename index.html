@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voxel Art Converter - 我的世界风格化转换器</title>
+    <meta name="description" content="将任意照片转换为 3D 乐高/Minecraft 方块风格的渲染图，支持导出 .obj 和 .schematic 格式">
+    <link rel="stylesheet" href="css/style.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/utils/BufferGeometryUtils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- 背景动效 -->
+        <div class="bg-animation">
+            <div class="cube cube-1"></div>
+            <div class="cube cube-2"></div>
+            <div class="cube cube-3"></div>
+            <div class="cube cube-4"></div>
+            <div class="cube cube-5"></div>
+        </div>
+
+        <!-- 标题区域 -->
+        <header class="header">
+            <div class="logo">
+                <span class="logo-icon">🧱</span>
+                <h1>Voxel Art Converter</h1>
+            </div>
+            <p class="tagline">将照片转换为 Minecraft 风格的 3D 体素艺术</p>
+        </header>
+
+        <!-- 主内容区 -->
+        <main class="main-content">
+            <!-- 左侧面板 - 上传和控制 -->
+            <aside class="control-panel">
+                <!-- 上传区域 -->
+                <section class="upload-section glass-panel">
+                    <h2>📷 上传图片</h2>
+                    <div class="upload-zone" id="uploadZone">
+                        <input type="file" id="fileInput" accept="image/*" hidden>
+                        <div class="upload-placeholder" id="uploadPlaceholder">
+                            <span class="upload-icon">📁</span>
+                            <p>拖拽图片到这里</p>
+                            <p class="upload-hint">或点击选择文件</p>
+                        </div>
+                        <img id="previewImage" class="preview-image" alt="预览">
+                    </div>
+                </section>
+
+                <!-- 控制参数 -->
+                <section class="settings-section glass-panel">
+                    <h2>⚙️ 转换设置</h2>
+
+                    <div class="setting-group">
+                        <label for="resolution">分辨率 (方块数)</label>
+                        <div class="slider-container">
+                            <input type="range" id="resolution" min="16" max="128" value="48" step="8">
+                            <span class="slider-value" id="resolutionValue">48</span>
+                        </div>
+                    </div>
+
+                    <div class="setting-group">
+                        <label for="depthScale">深度强度</label>
+                        <div class="slider-container">
+                            <input type="range" id="depthScale" min="1" max="20" value="8" step="1">
+                            <span class="slider-value" id="depthScaleValue">8</span>
+                        </div>
+                    </div>
+
+                    <div class="setting-group">
+                        <label for="palette">调色板</label>
+                        <select id="palette">
+                            <option value="minecraft">Minecraft 原版</option>
+                            <option value="terracotta">陶瓦系列</option>
+                            <option value="wool">羊毛系列</option>
+                            <option value="concrete">混凝土系列</option>
+                            <option value="full">完整调色板</option>
+                        </select>
+                    </div>
+
+                    <div class="setting-group">
+                        <label for="fillMode">填充模式</label>
+                        <select id="fillMode">
+                            <option value="surface">仅表面</option>
+                            <option value="solid">实心填充</option>
+                            <option value="hollow">空心结构</option>
+                        </select>
+                    </div>
+
+                    <button class="btn btn-primary" id="convertBtn" disabled>
+                        <span class="btn-icon">✨</span>
+                        开始转换
+                    </button>
+                </section>
+
+                <!-- 导出选项 -->
+                <section class="export-section glass-panel">
+                    <h2>💾 导出</h2>
+                    <div class="export-buttons">
+                        <button class="btn btn-export" id="exportObj" disabled>
+                            <span class="btn-icon">📦</span>
+                            导出 .OBJ
+                        </button>
+                        <button class="btn btn-export" id="exportSchematic" disabled>
+                            <span class="btn-icon">🎮</span>
+                            导出 .schematic
+                        </button>
+                    </div>
+                    <p class="export-hint">转换完成后可导出文件</p>
+                </section>
+            </aside>
+
+            <!-- 右侧面板 - 3D 预览 -->
+            <section class="preview-panel glass-panel">
+                <div class="preview-header">
+                    <h2>🎨 3D 预览</h2>
+                    <div class="preview-controls">
+                        <button class="btn btn-icon-only" id="resetCamera" title="重置视角">
+                            🔄
+                        </button>
+                        <button class="btn btn-icon-only" id="toggleWireframe" title="线框模式">
+                            🔲
+                        </button>
+                        <button class="btn btn-icon-only" id="toggleLight" title="切换光照">
+                            💡
+                        </button>
+                    </div>
+                </div>
+                <div class="canvas-container" id="canvasContainer">
+                    <div class="loading-overlay" id="loadingOverlay">
+                        <div class="loading-spinner"></div>
+                        <p id="loadingText">准备就绪</p>
+                    </div>
+                    <canvas id="renderCanvas"></canvas>
+                </div>
+                <div class="preview-stats">
+                    <span id="statsBlocks">方块数: 0</span>
+                    <span id="statsSize">尺寸: 0×0×0</span>
+                </div>
+            </section>
+        </main>
+
+        <!-- 底部 -->
+        <footer class="footer">
+            <p>Voxel Art Converter © 2026 | 支持导入 Minecraft 的 3D 体素艺术生成器</p>
+        </footer>
+    </div>
+
+    <!-- JavaScript 模块 -->
+    <script src="js/minecraft/palette.js"></script>
+    <script src="js/imageProcessor.js"></script>
+    <script src="js/depthEstimator.js"></script>
+    <script src="js/voxelizer.js"></script>
+    <script src="js/voxelRenderer.js"></script>
+    <script src="js/exporters/objExporter.js"></script>
+    <script src="js/exporters/schematicExporter.js"></script>
+    <script src="js/app.js"></script>
+</body>
+
+</html>
